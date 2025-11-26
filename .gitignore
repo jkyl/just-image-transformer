@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+.ruff_cache/
+wandb/
+.pytest_cache/
+checkpoints/
+.vscode

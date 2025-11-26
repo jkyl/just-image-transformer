@@ -1,0 +1,37 @@
+model:
+  patch_size: 32
+  bottleneck_dim: 128
+  num_classes: 1000
+  num_layers: 24
+  data_dim: 3
+  dim: 1024
+  hidden_dim: 2816
+  num_heads: 16
+  qk_norm: true
+  num_temb_freqs: 128
+  seed: 42
+
+optimizer:
+  lr: 5e-5  # They use 2e-4 with BS=1024, so divide by sqrt(1024/64)=4 to get 5e-5.
+  weight_decay: 0
+  b1: 0.9
+  b2: 0.95
+  eps: 1e-12
+  warmup_steps: 1000
+  max_grad_norm: 10.0
+
+dataloader:
+  image_size: 512
+  batch_size: 64
+  num_workers: 2
+  prefetch_buffer_size: 4
+  seed: 47
+  split: "train"
+
+training:
+  seed: 1234
+  wandb_project: "just-image-transformer"
+  checkpoint_directory: "checkpoints/{project}/{run}/{step:08d}/"
+  save_interval: 5000
+  max_checkpoints_to_keep: 2
+  resume_from: null

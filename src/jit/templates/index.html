@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just Image Transformer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body { 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #1d2021;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1rem;
+        }
+        
+        .container { 
+            background: #282828;
+            padding: 3rem 2.5rem;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            width: 100%;
+            max-width: 640px;
+            border: 1px solid #3c3836;
+        }
+        
+        h1 { 
+            font-size: 2rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: 2.5rem;
+            color: #ebdbb2;
+        }
+        
+        .controls { 
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            margin-bottom: 2rem;
+        }
+        
+        .row { 
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .control-group { 
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            min-width: 0;
+        }
+        
+        label { 
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+            color: #a89984;
+        }
+        
+        input, select { 
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid #504945;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            background: #3c3836;
+            color: #ebdbb2;
+        }
+        
+        input:focus, select:focus { 
+            outline: none;
+            border-color: #d79921;
+            background: #32302f;
+        }
+        
+        /* Ensure options are visible on all OS/Browsers */
+        select option {
+            background-color: #3c3836;
+            color: #ebdbb2;
+        }
+        
+        button { 
+            width: 100%;
+            padding: 1rem;
+            background: #d79921;
+            color: #1d2021;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+        
+        button:hover { 
+            background: #fabd2f;
+        }
+        
+        button:active { 
+            background: #b57614;
+        }
+        
+        button:disabled { 
+            background: #504945;
+            color: #7c6f64;
+            cursor: not-allowed;
+        }
+        
+        #output { 
+            margin-top: 2.5rem;
+            background: #32302f;
+            border-radius: 8px;
+            padding: 1.5rem;
+            min-height: 280px;
+            border: 1px solid #3c3836;
+        }
+        
+        #output.centered { 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        
+        #output.grid { 
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1rem;
+        }
+        
+        img { 
+            width: 100%;
+            height: auto;
+            border-radius: 6px;
+            display: block;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+        
+        .progress-container { 
+            width: 100%;
+            max-width: 300px;
+            height: 6px;
+            background-color: #3c3836;
+            border-radius: 10px;
+            overflow: hidden;
+            display: none;
+        }
+        
+        .progress-bar { 
+            width: 0%;
+            height: 100%;
+            background: #d79921;
+            transition: width 0.3s ease;
+            border-radius: 10px;
+        }
+        
+        .status-text { 
+            color: #a89984;
+            font-size: 0.9rem;
+            font-weight: 500;
+            display: none;
+        }
+
+        .error { 
+            color: #fb4934;
+            margin-top: 1rem;
+            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        
+        #placeholder {
+            color: #7c6f64;
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Just Image Transformer</h1>
+        
+        <div class="controls">
+            <!-- Row 1: Numeric Parameters -->
+            <div class="row">
+                <div class="control-group">
+                    <label>Seed</label>
+                    <input type="number" id="seed" value="{{ defaults.seed }}">
+                </div>
+
+                <div class="control-group">
+                    <label>Strength</label>
+                    <input type="number" id="cfg" value="{{ defaults.cfg_strength }}" step="0.1">
+                </div>
+
+                <div class="control-group">
+                    <label>Steps</label>
+                    <input type="number" id="steps" value="{{ defaults.num_steps }}">
+                </div>
+            </div>
+
+            <!-- Row 2: Class and Schedule -->
+            <div class="row">
+                <div class="control-group">
+                    <label>Class</label>
+                    <!-- Renamed ID from 'label' to 'class_label' to avoid DOM conflicts -->
+                    <select id="class_label"></select>
+                </div>
+                
+                <div class="control-group">
+                    <label>Schedule</label>
+                    <select id="schedule">
+                        {% for name in schedules %}
+                        <option value="{{ name }}" {% if name == defaults.schedule %}selected{% endif %}>
+                            {{ name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <button onclick="generate()" id="btn">Generate</button>
+        <div id="err" class="error"></div>
+
+        <div id="output" class="centered">
+            <!-- Progress Elements -->
+            <div class="progress-container" id="prog-container">
+                <div class="progress-bar" id="prog-bar"></div>
+            </div>
+            <div class="status-text" id="status-text">Initializing...</div>
+            
+            <span id="placeholder">Images will appear here</span>
+        </div>
+    </div>
+
+    <script>
+        // Data injected safely via Jinja
+        const IMAGENET_LABELS = {{ labels | tojson }};
+        const DEFAULTS = {{ defaults | tojson }};
+        
+        const labelSelect = document.getElementById('class_label');
+        
+        // Populate Labels
+        IMAGENET_LABELS.forEach(([id, name]) => {
+            const opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = `${id}: ${name}`;
+            if (id === DEFAULTS.label) opt.selected = true;
+            labelSelect.appendChild(opt);
+        });
+
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') generate();
+        });
+
+        async function generate() {
+            const btn = document.getElementById('btn');
+            if (btn.disabled) return;
+
+            const output = document.getElementById('output');
+            const placeholder = document.getElementById('placeholder');
+            const err = document.getElementById('err');
+            const progContainer = document.getElementById('prog-container');
+            const progBar = document.getElementById('prog-bar');
+            const statusText = document.getElementById('status-text');
+            
+            // UI State: Loading
+            btn.disabled = true;
+            placeholder.style.display = 'none';
+            err.innerText = '';
+            
+            output.className = 'centered';
+            output.querySelectorAll('img').forEach(e => e.remove());
+            
+            // Reset Progress
+            progContainer.style.display = 'block';
+            statusText.style.display = 'block';
+            statusText.innerText = "Starting...";
+            progBar.style.width = '0%';
+
+            const totalSteps = parseInt(document.getElementById('steps').value);
+            let currentStep = 0;
+
+            const payload = {
+                label: parseInt(document.getElementById('class_label').value),
+                seed: parseInt(document.getElementById('seed').value),
+                cfg_strength: parseFloat(document.getElementById('cfg').value),
+                num_steps: totalSteps,
+                schedule: document.getElementById('schedule').value
+            };
+
+            try {
+                const response = await fetch('/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status}`);
+                }
+
+                // Stream Reader
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    
+                    // Process all complete lines
+                    buffer = lines.pop(); 
+                    
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        const msg = JSON.parse(line);
+
+                        if (msg.type === 'progress') {
+                            currentStep++;
+                            const pct = Math.min((currentStep / totalSteps) * 100, 100);
+                            progBar.style.width = pct + '%';
+                            statusText.innerText = `Generating step ${currentStep}/${totalSteps}...`;
+                        } else if (msg.type === 'result') {
+                            // UI State: Results
+                            progContainer.style.display = 'none';
+                            statusText.style.display = 'none';
+                            output.className = 'grid';
+                            
+                            msg.images.forEach(b64 => {
+                                const img = document.createElement('img');
+                                img.src = "data:image/png;base64," + b64;
+                                output.appendChild(img);
+                            });
+                        } else if (msg.error) {
+                            throw new Error(msg.error);
+                        }
+                    }
+                }
+
+            } catch (e) {
+                console.error(e);
+                err.innerText = "Error: " + e.message;
+                placeholder.style.display = 'block';
+                progContainer.style.display = 'none';
+                statusText.style.display = 'none';
+                output.className = 'centered';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>

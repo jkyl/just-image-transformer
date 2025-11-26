@@ -1,0 +1,30 @@
+[project]
+name = "just-image-transformer"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "beartype>=0.22.3",
+    "datasets>=4.3.0",
+    "einops>=0.8.1",
+    "flax>=0.12.0",
+    "grain>=0.2.13",
+    "jax[cuda12]>=0.8.1; sys_platform == 'linux'",
+    "jax>=0.8.1; sys_platform != 'linux'",
+    "jaxtyping>=0.3.3",
+    "omegaconf>=2.3.0",
+    "optax>=0.2.6",
+    "pillow>=12.0.0",
+    "tqdm>=4.67.1",
+    "wandb>=0.22.3",
+    "flask>=3.1.2",
+]
+
+[tool.ruff.lint]
+extend-select = ["I"]
+ignore = ["F722"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["wandb"]
+
+[tool.ty.rules]
+invalid-syntax-in-forward-annotation = "ignore"
