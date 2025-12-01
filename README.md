@@ -1,7 +1,7 @@
 # `just-image-transformer`
 
 [![CI](https://github.com/jkyl/just-image-transformer/actions/workflows/ci.yaml/badge.svg)](https://github.com/jkyl/just-image-transformer/actions/workflows/ci.yaml)
-[![Weights](https://img.shields.io/badge/weights-google%20drive-blue?logo=google-drive)](https://drive.google.com/file/d/138Vvu9MM96Sm9KaxVV9bKkMVQ3VmzCmm/view?usp=sharing)
+[![Weights](https://img.shields.io/badge/weights-442k-blue?logo=google-drive)](https://drive.google.com/file/d/190nJU11y04f9Dt_aqHeSKtWu8gG3S2Nw/view?usp=sharing)
 
 Unofficial JAX implementation of ["Back to Basics: Let Denoising Generative Models Denoise"](https://arxiv.org/abs/2511.13720) a.k.a. "Just Image Transformers" (JiT), by Tianhong Li and Kaiming He.
 
