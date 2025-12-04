@@ -145,6 +145,14 @@ def train_step(
 
 
 def train(config: Config, notes: str | None = None) -> None:
+    devices = jax.devices()
+    num_devices = len(devices)
+    fsdp_size = min(num_devices, 8)
+    data_size = num_devices // fsdp_size
+    mesh = jax.make_mesh((data_size, fsdp_size), ("data", "hsdp"))
+    jax.set_mesh(mesh)
+    print(f"Created mesh: {mesh}")
+
     model, optimizer = init(config, rngs=nnx.Rngs(config.model.seed))
     print(model)
 
