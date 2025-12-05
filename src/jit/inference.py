@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 from config import Config
 
 from .model import JustImageTransformer, typechecked
-from .serialization import load
+from .serialization import device_to_host, load
 from .train import init
 
 
@@ -138,7 +138,7 @@ def prepare_batch(
 
 
 def postprocess_image(result: Float32[Array, "height width 3"]) -> PIL.Image.Image:
-    img = np.asarray(result)
+    img = device_to_host(result)
     img = np.clip(img * 128 + 128, 0, 255).astype(np.uint8)
     img = PIL.Image.fromarray(img)
     return img

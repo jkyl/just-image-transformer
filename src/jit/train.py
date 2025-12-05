@@ -19,7 +19,7 @@ from config import Config
 
 from .dataset import imagenet
 from .model import JustImageTransformer, typechecked
-from .serialization import restore, save
+from .serialization import device_to_host, restore, save
 
 
 def tree_norm(tree: PyTree[Float32[Array, "..."]]) -> Float32[Array, ""]:
@@ -168,11 +168,12 @@ def train(config: Config, notes: str | None = None) -> None:
     )
 
     def checkpoint() -> None:
+        global_step_array = device_to_host(optimizer.step.value)
         ckpt = Path(
             config.training.checkpoint_directory.format(
                 project=config.training.wandb_project,
                 run=run.name or run.id,
-                step=optimizer.step.value.item(),
+                step=global_step_array.item(),
             )
         )
         print(f"saving new checkpoint {ckpt}")
