@@ -10,7 +10,9 @@ import jax.numpy as jnp
 import optax
 import wandb
 from flax import nnx
+from grain.experimental import device_put
 from jax.experimental import io_callback
+from jax.sharding import AxisType, NamedSharding
 from jaxtyping import Array, Float32, Int32, PRNGKeyArray, PyTree
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
@@ -18,7 +20,7 @@ from tqdm.auto import tqdm
 from config import Config
 
 from .dataset import imagenet
-from .model import JustImageTransformer, typechecked
+from .model import JustImageTransformer, fsdp, typechecked
 from .serialization import device_to_host, restore, save
 
 
@@ -149,7 +151,11 @@ def train(config: Config, notes: str | None = None) -> None:
     num_devices = len(devices)
     fsdp_size = min(num_devices, 8)
     data_size = num_devices // fsdp_size
-    mesh = jax.make_mesh((data_size, fsdp_size), ("data", "hsdp"))
+    mesh = jax.make_mesh(
+        (data_size, fsdp_size),
+        ("data", "hsdp"),
+        axis_types=(AxisType.Explicit, AxisType.Explicit),
+    )
     jax.set_mesh(mesh)
     print(f"Created mesh: {mesh}")
 
@@ -192,7 +198,18 @@ def train(config: Config, notes: str | None = None) -> None:
         wandb_callback,
     )
     key = jax.random.PRNGKey(config.training.seed)
-    for step, batch in enumerate(imagenet(**asdict(config.dataloader))):
+    ds = imagenet(**asdict(config.dataloader))
+    data_sharding = NamedSharding(
+        mesh,
+        jax.P(
+            fsdp,
+        ),
+    )
+    ds = device_put(
+        ds,
+        (data_sharding, data_sharding),
+    )
+    for step, batch in enumerate(ds):
         if step % config.training.save_interval == 0:
             checkpoint()
         train_step(

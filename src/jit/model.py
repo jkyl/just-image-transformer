@@ -25,7 +25,7 @@ import jax.numpy as jnp
 from beartype import beartype
 from flax import nnx
 from jax.ad_checkpoint import checkpoint_name as ckpt
-from jax.nn.initializers import glorot_normal
+from jax.nn.initializers import glorot_normal, variance_scaling
 from jax.sharding import PartitionSpec as P
 from jax.sharding import reshard
 from jaxtyping import (
@@ -476,7 +476,11 @@ class JustImageTransformer(DiffusionTransformer):
             )
         )
         if num_classes is not None:
-            self.class_embedding = nnx.Embed(num_classes + 1, dim, rngs=rngs)
+            self.class_embedding = nnx.Param(
+                variance_scaling(1.0, "fan_in", "normal", out_axis=0)(
+                    rngs(), (num_classes + 1, dim), out_sharding=P()
+                )
+            )
         else:
             self.class_embedding = None
 
@@ -530,7 +534,15 @@ class JustImageTransformer(DiffusionTransformer):
     ) -> BFloat16[Array, "B height width channels"]:
         if c is not None:
             assert self.class_embedding is not None
-            cond = self.class_embedding(c).astype(jnp.bfloat16)
+            cond = (
+                self.class_embedding.value.at[c]
+                .get(
+                    out_sharding=P(
+                        fsdp,
+                    )
+                )
+                .astype(jnp.bfloat16)
+            )
         else:
             cond = None
         x = self.patchify(x)
