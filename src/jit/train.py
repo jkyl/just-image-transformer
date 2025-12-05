@@ -27,7 +27,7 @@ from .serialization import device_to_host, restore, save
 
 def tree_norm(tree: PyTree[Float32[Array, "..."]]) -> Float32[Array, ""]:
     return jnp.sqrt(
-        jax.tree.reduce_associative(add, jax.tree.map(lambda g: jnp.sum(g ** 2), tree)),
+        jax.tree.reduce_associative(add, jax.tree.map(lambda g: jnp.sum(g**2), tree)),
     )
 
 

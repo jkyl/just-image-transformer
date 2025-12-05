@@ -107,6 +107,11 @@ def apply_rope(
     return _apply_rope(x, rope, out_sharding=jax.typeof(x).sharding)
 
 
+@typechecked
+def all_gather_bf16(param: nnx.Param[Float32[Array, "..."]]) -> BFloat16[Array, "..."]:
+    return reshard(param.value.astype(jnp.bfloat16), P())
+
+
 class MultiHeadAttention(nnx.Module):
     def __init__(
         self,
@@ -148,7 +153,7 @@ class MultiHeadAttention(nnx.Module):
         q, k, v = jnp.einsum(
             "BTD, D3NH -> 3BTNH",
             x,
-            reshard(self.W_qkv.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_qkv),
             out_sharding=P(None, fsdp),
         )
         if rope is not None:
@@ -160,7 +165,7 @@ class MultiHeadAttention(nnx.Module):
         return jnp.einsum(
             "BTNH, NHD -> BTD",
             attn,
-            reshard(self.W_out.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_out),
             out_sharding=P(fsdp),
         )
 
@@ -183,13 +188,13 @@ class FeedForward(nnx.Module):
         h, gate = jnp.einsum(
             "BTD, D2M -> 2BTM",
             x,
-            reshard(self.W_up.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_up),
             out_sharding=P(None, fsdp),
         )
         h = gate * nnx.silu(h)
         return jnp.dot(
             h,
-            reshard(self.W_down.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_down),
             out_sharding=P(fsdp),
         )
 
@@ -273,7 +278,7 @@ class TimestepEmbedding(nnx.Module):
         embeddings = jnp.exp(1j * self.freqs.value * t[:, None])
         return jnp.dot(
             embeddings.view(dtype=jnp.float32).astype(jnp.bfloat16),
-            reshard(self.weight.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.weight),
             out_sharding=P(fsdp),
         )
 
@@ -382,7 +387,7 @@ class DiffusionTransformer(nnx.Module):
         # Up-project the input onto the model dim.
         x = jnp.dot(
             x,
-            reshard(self.W_in.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_in),
             out_sharding=P(fsdp),
         )
 
@@ -425,7 +430,7 @@ class DiffusionTransformer(nnx.Module):
         # Project back to the data dim and rearrange back to original shape.
         x = jnp.dot(
             x,
-            reshard(self.W_out.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.W_out),
             out_sharding=P(fsdp),
         )
         x = jnp.reshape(
@@ -552,13 +557,13 @@ class JustImageTransformer(DiffusionTransformer):
         x = self.patchify(x)
         x = jnp.dot(
             x,
-            reshard(self.bottleneck_down.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.bottleneck_down),
             out_sharding=P(fsdp),
         )
         x = super().__call__(x, t, cond)
         x = jnp.dot(
             x,
-            reshard(self.bottleneck_up.value.astype(jnp.bfloat16), P()),
+            all_gather_bf16(self.bottleneck_up),
             out_sharding=P(fsdp),
         )
         x = self.unpatchify(x)
