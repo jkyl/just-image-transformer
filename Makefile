@@ -1,4 +1,4 @@
-.PHONY: all lint typecheck format check
+.PHONY: all lint typecheck format check ci-lint ci-check ci
 
 all: lint typecheck
 
@@ -12,3 +12,13 @@ lint: format check
 
 typecheck:
 	uvx ty check
+
+ci-format:
+	uvx ruff format --check
+
+ci-check:
+	uvx ruff check
+
+ci-lint: ci-format ci-check
+
+ci: ci-lint typecheck
