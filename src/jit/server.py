@@ -155,7 +155,7 @@ EXECUTOR = ThreadPoolExecutor(max_workers=4)
 def generate_images():
     assert STATE.initialized
     if not request.json:
-        return {"error": "No arguments received"}
+        return {"error": "No arguments received"}, 400
     try:
         args = GenerationArgs(**request.json)
     except Exception as e:

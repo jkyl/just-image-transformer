@@ -1,5 +1,7 @@
+import ctypes
 from collections.abc import Callable
 from pathlib import Path
+from shutil import which
 from typing import TypeVar
 
 import jax
@@ -8,15 +10,52 @@ import numpy as np
 from flax import nnx
 from jaxtyping import Array, PyTree
 
+try:
+    cudart = ctypes.CDLL("libcudart.so")
+except OSError:
+    cudart = ctypes.CDLL("libcudart.so.12")
+
+
 # Separator used in state dict keys.
 default_sep = "."
+
+
+def device_to_host(device_array: Array) -> np.ndarray:
+    # Short circuit on non-WSL systems: np.asarray works fine.
+    if which("wslinfo") is None:
+        return np.asarray(device_array)
+
+    # We are on WSL which has issues virtualizing CUDA memory that cause OOM on device->host.
+    device_array.block_until_ready()
+    cuda_interface = device_array.__cuda_array_interface__  # ty: ignore[unresolved-attribute]
+    device_ptr = cuda_interface["data"][0]
+    shape = device_array.shape
+    dtype = device_array.dtype
+    size_bytes = device_array.nbytes
+    host_array = np.empty(shape, dtype=dtype)
+    host_ptr = host_array.ctypes.data
+    cudaMemcpyDeviceToHost = 2
+    error_code = cudart.cudaMemcpy(
+        ctypes.c_void_p(host_ptr),
+        ctypes.c_void_p(device_ptr),
+        ctypes.c_size_t(size_bytes),
+        ctypes.c_int(cudaMemcpyDeviceToHost),
+    )
+    if error_code != 0:
+        cudart.cudaGetErrorString.restype = ctypes.c_char_p
+        error_msg = cudart.cudaGetErrorString(error_code).decode("utf-8")
+        raise RuntimeError(f"cudaMemcpy failed: {error_msg} (code {error_code})")
+
+    return host_array
 
 
 def pytree_to_state_dict(
     tree: PyTree[Array], separator: str = default_sep
 ) -> dict[str, np.ndarray]:
     return {
-        jax.tree_util.keystr(path, simple=True, separator=separator): np.asarray(leaf)
+        jax.tree_util.keystr(path, simple=True, separator=separator): device_to_host(
+            leaf
+        )
         for path, leaf in jax.tree_util.tree_leaves_with_path(tree)
     }
 
