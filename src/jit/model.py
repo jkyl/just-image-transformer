@@ -27,7 +27,7 @@ from flax import nnx
 from jax.ad_checkpoint import checkpoint_name as ckpt
 from jax.nn.initializers import glorot_normal, variance_scaling
 from jax.sharding import PartitionSpec as P
-from jax.sharding import reshard
+from jax.sharding import auto_axes, reshard
 from jaxtyping import (
     Array,
     BFloat16,
@@ -98,9 +98,14 @@ def apply_rope(
     x: BFloat16[Array, "B T N H"],
     rope: Complex64[Array, "T N F"],
 ) -> BFloat16[Array, "B T N H"]:
-    x_complex = x.astype(jnp.float32).view(dtype=jnp.complex64)
-    x_rotated = x_complex * rope
-    return x_rotated.view(dtype=jnp.float32).astype(jnp.bfloat16)
+    
+    @auto_axes
+    def _apply_rope(_x, _rope):
+        x_complex = _x.astype(jnp.float32).view(dtype=jnp.complex64)
+        x_rotated = x_complex * _rope
+        return x_rotated.view(dtype=jnp.float32).astype(jnp.bfloat16)
+
+    return _apply_rope(x, rope, out_sharding=jax.typeof(x).sharding)
 
 
 class MultiHeadAttention(nnx.Module):
