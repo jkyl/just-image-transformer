@@ -98,7 +98,6 @@ def apply_rope(
     x: BFloat16[Array, "B T N H"],
     rope: Complex64[Array, "T N F"],
 ) -> BFloat16[Array, "B T N H"]:
-    
     @auto_axes
     def _apply_rope(_x, _rope):
         x_complex = _x.astype(jnp.float32).view(dtype=jnp.complex64)

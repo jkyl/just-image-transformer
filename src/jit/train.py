@@ -13,6 +13,7 @@ from flax import nnx
 from grain.experimental import device_put
 from jax.experimental import io_callback
 from jax.sharding import AxisType, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Float32, Int32, PRNGKeyArray, PyTree
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
@@ -26,7 +27,7 @@ from .serialization import device_to_host, restore, save
 
 def tree_norm(tree: PyTree[Float32[Array, "..."]]) -> Float32[Array, ""]:
     return jnp.sqrt(
-        jax.tree.reduce_associative(add, jax.tree.map(lambda g: jnp.vdot(g, g), tree)),
+        jax.tree.reduce_associative(add, jax.tree.map(lambda g: jnp.sum(g ** 2), tree)),
     )
 
 
@@ -199,12 +200,7 @@ def train(config: Config, notes: str | None = None) -> None:
     )
     key = jax.random.PRNGKey(config.training.seed)
     ds = imagenet(**asdict(config.dataloader))
-    data_sharding = NamedSharding(
-        mesh,
-        jax.P(
-            fsdp,
-        ),
-    )
+    data_sharding = NamedSharding(mesh, P(fsdp))
     ds = device_put(
         ds,
         (data_sharding, data_sharding),
