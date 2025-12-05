@@ -1,11 +1,11 @@
 model:
   patch_size: 32
-  bottleneck_dim: 128
+  bottleneck_dim: 256
   num_classes: 1000
-  num_layers: 24
+  num_layers: 32
   data_dim: 3
-  dim: 1024
-  hidden_dim: 2816
+  dim: 1280
+  hidden_dim: 3520
   num_heads: 16
   qk_norm: true
   num_temb_freqs: 128
@@ -22,7 +22,7 @@ optimizer:
 
 dataloader:
   image_size: 512
-  batch_size: 64
+  batch_size: 24
   num_workers: 2
   prefetch_buffer_size: 4
   seed: 47
@@ -30,7 +30,7 @@ dataloader:
 
 training:
   seed: 1234
-  wandb_project: "jit-L-32"
+  wandb_project: "jit-H-32"
   checkpoint_directory: "checkpoints/{project}/{run}/{step:08d}/"
   save_interval: 5000
   max_checkpoints_to_keep: 2
