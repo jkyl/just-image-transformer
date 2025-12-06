@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import optax
 import wandb
 from flax import nnx
-from grain.experimental import device_put
+from grain.experimental import device_put as iter_dataset_device_put
 from jax.experimental import io_callback
 from jax.sharding import AxisType, NamedSharding
 from jax.sharding import PartitionSpec as P
@@ -200,11 +200,8 @@ def train(config: Config, notes: str | None = None) -> None:
     )
     key = jax.random.PRNGKey(config.training.seed)
     ds = imagenet(**asdict(config.dataloader))
-    data_sharding = NamedSharding(mesh, P(fsdp))
-    ds = device_put(
-        ds,
-        (data_sharding, data_sharding),
-    )
+    sharding = NamedSharding(mesh, P(fsdp))
+    ds = iter_dataset_device_put(ds, (sharding, sharding))
     for step, batch in enumerate(ds):
         if step % config.training.save_interval == 0:
             checkpoint()

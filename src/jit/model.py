@@ -545,11 +545,7 @@ class JustImageTransformer(DiffusionTransformer):
             assert self.class_embedding is not None
             cond = (
                 self.class_embedding.value.at[c]
-                .get(
-                    out_sharding=P(
-                        fsdp,
-                    )
-                )
+                .get(out_sharding=P(fsdp))
                 .astype(jnp.bfloat16)
             )
         else:
