@@ -1,27 +1,3 @@
-from functools import partial
-from typing import Protocol
-
-import jax
-import jax.numpy as jnp
-from beartype import beartype
-from einops import rearrange
-from flax import nnx
-from jax.ad_checkpoint import checkpoint_name as ckpt
-from jax.nn.initializers import glorot_normal
-from jaxtyping import (
-    Array,
-    BFloat16,
-    Bool,
-    Complex64,
-    Float32,
-    Int32,
-    PRNGKeyArray,
-    jaxtyped,
-)
-
-typechecked = jaxtyped(typechecker=beartype)
-
-
 """
 Shapes legend:
 
@@ -41,6 +17,34 @@ cf.
   * https://jax-ml.github.io/scaling-book/transformers/#transformer-accounting
 """
 
+from functools import partial
+from typing import Protocol
+
+import jax
+import jax.numpy as jnp
+from beartype import beartype
+from flax import nnx
+from jax.ad_checkpoint import checkpoint_name as ckpt
+from jax.nn.initializers import glorot_normal, variance_scaling
+from jax.sharding import PartitionSpec as P
+from jax.sharding import auto_axes, reshard
+from jaxtyping import (
+    Array,
+    BFloat16,
+    Complex64,
+    Float32,
+    Int32,
+    PRNGKeyArray,
+    jaxtyped,
+)
+
+# Runtime type checker for JAX functions.
+typechecked = jaxtyped(typechecker=beartype)
+
+
+# Shorthand for sharding over all devices.
+fsdp = ("data", "hsdp")
+
 
 class AttnFn(Protocol):
     def __call__(
@@ -48,26 +52,25 @@ class AttnFn(Protocol):
         query: BFloat16[Array, "B T N H"],
         key: BFloat16[Array, "B T N H"],
         value: BFloat16[Array, "B T N H"],
-        mask: BFloat16[Array, "*B #N T T"] | None,
     ) -> BFloat16[Array, "B T N H"]: ...
 
 
+def make_sharded_attn_fn(attn_fn: AttnFn) -> AttnFn:
+    return jax.shard_map(
+        attn_fn,
+        in_specs=(P(fsdp), P(fsdp), P(fsdp)),
+        out_specs=P(fsdp),
+    )
+
+
 # Sensible default for bidirectional attention on GPU.
-default_attn_fn = partial(jax.nn.dot_product_attention, implementation="cudnn")
+default_attn_fn = make_sharded_attn_fn(
+    partial(jax.nn.dot_product_attention, implementation="cudnn")
+)
 
 
 # Reuse the same default eps in functional and modular RMS norms.
 default_rms_norm_eps = 1e-6
-
-
-@typechecked
-def apply_rope(
-    x: BFloat16[Array, "B T N H"],
-    rope: Complex64[Array, "T N F"],
-) -> BFloat16[Array, "B T N H"]:
-    x_complex = x.astype(jnp.float32).view(dtype=jnp.complex64)
-    x_rotated = x_complex * rope
-    return x_rotated.view(dtype=jnp.float32).astype(jnp.bfloat16)
 
 
 @typechecked
@@ -78,6 +81,35 @@ def rms_norm(
     return x * (
         jax.lax.rsqrt((x.astype(jnp.float32) ** 2).mean(-1, keepdims=True) + eps)
     ).astype(jnp.bfloat16)
+
+
+class RMSNorm(nnx.Module):
+    def __init__(self, dim: int, eps: float = default_rms_norm_eps):
+        self.weight = nnx.Param(jnp.ones(dim, out_sharding=P()))
+        self.eps = eps
+
+    @typechecked
+    def __call__(self, x: BFloat16[Array, "... dim"]) -> BFloat16[Array, "... dim"]:
+        return rms_norm(x, self.eps) * self.weight.value.astype(jnp.bfloat16)
+
+
+@typechecked
+def apply_rope(
+    x: BFloat16[Array, "B T N H"],
+    rope: Complex64[Array, "T N F"],
+) -> BFloat16[Array, "B T N H"]:
+    @auto_axes
+    def _apply_rope(_x, _rope):
+        x_complex = _x.astype(jnp.float32).view(dtype=jnp.complex64)
+        x_rotated = x_complex * _rope
+        return x_rotated.view(dtype=jnp.float32).astype(jnp.bfloat16)
+
+    return _apply_rope(x, rope, out_sharding=jax.typeof(x).sharding)
+
+
+@typechecked
+def all_gather_bf16(param: nnx.Param[Float32[Array, "..."]]) -> BFloat16[Array, "..."]:
+    return reshard(param.value.astype(jnp.bfloat16), P())
 
 
 class MultiHeadAttention(nnx.Module):
@@ -94,12 +126,16 @@ class MultiHeadAttention(nnx.Module):
         self.attn_fn = attn_fn
         self.W_qkv = nnx.Param(
             glorot_normal(in_axis=0, out_axis=(1, 2, 3))(
-                key=rngs(), shape=(dim, 3, self.num_heads, self.head_dim)
+                key=rngs(),
+                shape=(dim, 3, self.num_heads, self.head_dim),
+                out_sharding=P("hsdp"),
             )
         )
         self.W_out = nnx.Param(
             glorot_normal(in_axis=(0, 1), out_axis=2)(
-                key=rngs(), shape=(self.num_heads, self.head_dim, self.dim)
+                key=rngs(),
+                shape=(self.num_heads, self.head_dim, self.dim),
+                out_sharding=P(None, "hsdp"),
             )
         )
 
@@ -112,50 +148,55 @@ class MultiHeadAttention(nnx.Module):
         self,
         x: BFloat16[Array, "B T D"],
         rope: Complex64[Array, "T N F"] | None,
-        mask: Bool[Array, "*B T"] | None,
         qk_norm: bool,
     ) -> BFloat16[Array, "B T D"]:
         q, k, v = jnp.einsum(
-            "BTD, D3NH -> 3BTNH", x, self.W_qkv.value.astype(jnp.bfloat16)
+            "BTD, D3NH -> 3BTNH",
+            x,
+            all_gather_bf16(self.W_qkv),
+            out_sharding=P(None, fsdp),
         )
         if rope is not None:
             q, k = map(lambda t: apply_rope(t, rope), (q, k))
         if qk_norm:
             q, k = map(rms_norm, (q, k))
-        if mask is not None:
-            mask = jnp.logical_and(mask[..., None, None, :], mask[..., None, :, None])
-        attn = ckpt(self.attn_fn(q, k, v, mask), "attn")
+
+        attn = ckpt(self.attn_fn(q, k, v), "attn")
         return jnp.einsum(
-            "BTNH, NHD -> BTD", attn, self.W_out.value.astype(jnp.bfloat16)
+            "BTNH, NHD -> BTD",
+            attn,
+            all_gather_bf16(self.W_out),
+            out_sharding=P(fsdp),
         )
 
 
 class FeedForward(nnx.Module):
     def __init__(self, dim: int, hidden_dim: int, *, rngs: nnx.Rngs):
         self.W_up = nnx.Param(
-            glorot_normal(in_axis=0, out_axis=(1, 2))(rngs(), (dim, 2, hidden_dim))
+            glorot_normal(in_axis=0, out_axis=(1, 2))(
+                rngs(), (dim, 2, hidden_dim), out_sharding=P("hsdp")
+            )
         )
         self.W_down = nnx.Param(
-            glorot_normal(in_axis=0, out_axis=1)(rngs(), (hidden_dim, dim))
+            glorot_normal(in_axis=0, out_axis=1)(
+                rngs(), (hidden_dim, dim), out_sharding=P("hsdp")
+            )
         )
 
     @typechecked
     def __call__(self, x: BFloat16[Array, "B T D"]) -> BFloat16[Array, "B T D"]:
         h, gate = jnp.einsum(
-            "BTD, D2M -> 2BTM", x, self.W_up.value.astype(jnp.bfloat16)
+            "BTD, D2M -> 2BTM",
+            x,
+            all_gather_bf16(self.W_up),
+            out_sharding=P(None, fsdp),
         )
         h = gate * nnx.silu(h)
-        return jnp.dot(h, self.W_down.value.astype(jnp.bfloat16))
-
-
-class RMSNorm(nnx.Module):
-    def __init__(self, dim: int, eps: float = default_rms_norm_eps):
-        self.weight = nnx.Param(jnp.ones(dim))
-        self.eps = eps
-
-    @typechecked
-    def __call__(self, x: BFloat16[Array, "... dim"]) -> BFloat16[Array, "... dim"]:
-        return rms_norm(x, self.eps) * self.weight.value.astype(jnp.bfloat16)
+        return jnp.dot(
+            h,
+            all_gather_bf16(self.W_down),
+            out_sharding=P(fsdp),
+        )
 
 
 class TransformerBlock(nnx.Module):
@@ -178,10 +219,9 @@ class TransformerBlock(nnx.Module):
         self,
         x: BFloat16[Array, "B T D"],
         rope: Complex64[Array, "T N F"] | None,
-        mask: Bool[Array, "*B T"] | None,
         qk_norm: bool,
     ) -> BFloat16[Array, "B T D"]:
-        x += self.attn(self.attn_norm(x), rope, mask, qk_norm)
+        x += self.attn(self.attn_norm(x), rope, qk_norm)
         x += self.ff(self.ff_norm(x))
         return x
 
@@ -210,7 +250,6 @@ class Backbone(nnx.Module):
         self,
         x: BFloat16[Array, "B T D"],
         rope: Complex64[Array, "L T N F"] | None,
-        mask: Bool[Array, "*B T"] | None,
         qk_norm: bool,
     ) -> BFloat16[Array, "B T D"]:
         @nnx.scan(in_axes=(0, nnx.Carry, 0), out_axes=nnx.Carry)
@@ -222,22 +261,25 @@ class Backbone(nnx.Module):
             ),
         )
         def forward(layer, _x, per_layer_rope):
-            return layer(_x, per_layer_rope, mask, qk_norm)
+            return layer(_x, per_layer_rope, qk_norm)
 
         return forward(self.blocks, x, rope)
 
 
 class TimestepEmbedding(nnx.Module):
     def __init__(self, dim: int, num_freqs: int, *, rngs: nnx.Rngs):
-        self.weight = nnx.Param(glorot_normal()(rngs(), (2 * num_freqs, dim)))
-        self.freqs = nnx.Param(jnp.zeros(num_freqs))
+        self.weight = nnx.Param(
+            glorot_normal()(rngs(), (2 * num_freqs, dim), out_sharding=P("hsdp"))
+        )
+        self.freqs = nnx.Param(jnp.zeros(num_freqs, out_sharding=P()))
 
     @typechecked
     def __call__(self, t: Float32[Array, " B"]) -> BFloat16[Array, "B D"]:
         embeddings = jnp.exp(1j * self.freqs.value * t[:, None])
         return jnp.dot(
             embeddings.view(dtype=jnp.float32).astype(jnp.bfloat16),
-            self.weight.value.astype(jnp.bfloat16),
+            all_gather_bf16(self.weight),
+            out_sharding=P(fsdp),
         )
 
 
@@ -245,7 +287,10 @@ class Rope(nnx.Module):
     def __init__(self, num_layers: int, num_heads: int, head_dim: int, num_dims: int):
         self.num_dims = num_dims
         self.freqs = nnx.Param(
-            jnp.zeros((num_layers, num_dims, num_heads, head_dim // 2))
+            jnp.zeros(
+                (num_layers, num_dims, num_heads, head_dim // 2),
+                out_sharding=P(),
+            )
         )
 
     @typechecked
@@ -304,7 +349,9 @@ class DiffusionTransformer(nnx.Module):
             if num_temb_freqs is not None
             else None
         )
-        self.W_in = nnx.Param(glorot_normal()(rngs(), (input_dim, dim)))
+        self.W_in = nnx.Param(
+            glorot_normal()(rngs(), (input_dim, dim), out_sharding=P("hsdp"))
+        )
         self.backbone = Backbone(
             num_layers=num_layers,
             dim=dim,
@@ -314,7 +361,9 @@ class DiffusionTransformer(nnx.Module):
             rngs=rngs,
         )
         self.final_norm = RMSNorm(dim)
-        self.W_out = nnx.Param(glorot_normal()(rngs(), (dim, output_dim)))
+        self.W_out = nnx.Param(
+            glorot_normal()(rngs(), (dim, output_dim), out_sharding=P("hsdp"))
+        )
 
     @property
     def head_dim(self) -> int:
@@ -333,10 +382,14 @@ class DiffusionTransformer(nnx.Module):
     ) -> BFloat16[Array, "B *spatial Cout"]:
         # Read off the input shape and rearrange to a sequence.
         b, *spatial, c = x.shape
-        x = jnp.reshape(x, (b, -1, c))
+        x = jnp.reshape(x, (b, -1, c), out_sharding=P(fsdp))
 
         # Up-project the input onto the model dim.
-        x = jnp.dot(x, self.W_in.value.astype(jnp.bfloat16))
+        x = jnp.dot(
+            x,
+            all_gather_bf16(self.W_in),
+            out_sharding=P(fsdp),
+        )
 
         # Build sequence with optional timestep and conditioning embeddings.
         prefix_tokens = []
@@ -369,17 +422,22 @@ class DiffusionTransformer(nnx.Module):
         # Left-pad the rope embeddings with 1+0j (0-degree rotation).
         rope = pad_sequence(self.rope(*spatial), pad + num_prefix, 1 + 0j)
 
-        # Don't mask any tokens, even the pad token, as it can be used as a sink.
-        mask = None
-
         # Apply the transformer, and slice off the padding and prefix token positions.
         x = self.final_norm(
-            self.backbone(seq, rope, mask, self.qk_norm)[:, pad + num_prefix :]
+            self.backbone(seq, rope, self.qk_norm)[:, pad + num_prefix :]
         )
 
         # Project back to the data dim and rearrange back to original shape.
-        x = jnp.dot(x, self.W_out.value.astype(jnp.bfloat16))
-        x = jnp.reshape(x, (b, *spatial, -1))
+        x = jnp.dot(
+            x,
+            all_gather_bf16(self.W_out),
+            out_sharding=P(fsdp),
+        )
+        x = jnp.reshape(
+            x,
+            (b, *spatial, -1),
+            out_sharding=P(fsdp),
+        )
         return x
 
 
@@ -417,19 +475,64 @@ class JustImageTransformer(DiffusionTransformer):
             rngs=rngs,
         )
         self.bottleneck_down = nnx.Param(
-            glorot_normal()(rngs(), (self.patch_dim, bottleneck_dim))
+            glorot_normal()(
+                rngs(), (self.patch_dim, bottleneck_dim), out_sharding=P("hsdp")
+            )
         )
         self.bottleneck_up = nnx.Param(
-            glorot_normal()(rngs(), (bottleneck_dim, self.patch_dim))
+            glorot_normal()(
+                rngs(), (bottleneck_dim, self.patch_dim), out_sharding=P("hsdp")
+            )
         )
         if num_classes is not None:
-            self.class_embedding = nnx.Embed(num_classes + 1, dim, rngs=rngs)
+            self.class_embedding = nnx.Param(
+                variance_scaling(1.0, "fan_in", "normal", out_axis=0)(
+                    rngs(), (num_classes + 1, dim), out_sharding=P()
+                )
+            )
         else:
             self.class_embedding = None
 
     @property
     def patch_dim(self) -> int:
         return self.patch_size**2 * self.data_dim
+
+    def patchify(
+        self, x: BFloat16[Array, "B height width channels"]
+    ) -> BFloat16[Array, "B h w patch_dim"]:
+        b, h, w, c = x.shape
+        ps = self.patch_size
+        x = jnp.reshape(
+            x,
+            (b, h // ps, ps, w // ps, ps, c),
+            out_sharding=P(fsdp),
+        )
+        x = jnp.transpose(x, (0, 1, 3, 2, 4, 5))
+        x = jnp.reshape(
+            x,
+            (b, h // ps, w // ps, ps * ps * c),
+            out_sharding=P(fsdp),
+        )
+        return x
+
+    def unpatchify(
+        self, x: BFloat16[Array, "B h w patch_dim"]
+    ) -> BFloat16[Array, "B height width channels"]:
+        b, h, w, _ = x.shape
+        ps = self.patch_size
+        c = self.data_dim
+        x = jnp.reshape(
+            x,
+            (b, h, w, ps, ps, c),
+            out_sharding=P(fsdp),
+        )
+        x = jnp.transpose(x, (0, 1, 3, 2, 4, 5))
+        x = jnp.reshape(
+            x,
+            (b, h * ps, w * ps, c),
+            out_sharding=P(fsdp),
+        )
+        return x
 
     @typechecked
     def __call__(
@@ -440,24 +543,25 @@ class JustImageTransformer(DiffusionTransformer):
     ) -> BFloat16[Array, "B height width channels"]:
         if c is not None:
             assert self.class_embedding is not None
-            cond = self.class_embedding(c).astype(jnp.bfloat16)
+            cond = (
+                self.class_embedding.value.at[c]
+                .get(out_sharding=P(fsdp))
+                .astype(jnp.bfloat16)
+            )
         else:
             cond = None
-        batch_size, height, width, channels = x.shape
-        x = rearrange(
+        x = self.patchify(x)
+        x = jnp.dot(
             x,
-            "b (h dh) (w dw) c -> b h w (dh dw c)",
-            dh=self.patch_size,
-            dw=self.patch_size,
+            all_gather_bf16(self.bottleneck_down),
+            out_sharding=P(fsdp),
         )
-        x = jnp.dot(x, self.bottleneck_down.value.astype(jnp.bfloat16))
         x = super().__call__(x, t, cond)
-        x = jnp.dot(x, self.bottleneck_up.value.astype(jnp.bfloat16))
-        x = rearrange(
+        x = jnp.dot(
             x,
-            "b h w (dh dw c) -> b (h dh) (w dw) c",
-            dh=self.patch_size,
-            dw=self.patch_size,
+            all_gather_bf16(self.bottleneck_up),
+            out_sharding=P(fsdp),
         )
-        x = jnp.tanh(x)  # Can do this with x-prediction!
+        x = self.unpatchify(x)
+        x = jnp.tanh(x)
         return x
