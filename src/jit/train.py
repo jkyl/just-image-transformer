@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 from config import Config
 
 from .dataset import imagenet
-from .model import JustImageTransformer, fsdp, typechecked
+from .model import JustImageTransformer, hsdp, typechecked
 from .serialization import device_to_host, restore, save
 
 
@@ -154,7 +154,7 @@ def train(config: Config, notes: str | None = None) -> None:
     data_size = num_devices // fsdp_size
     mesh = jax.make_mesh(
         (data_size, fsdp_size),
-        ("data", "hsdp"),
+        hsdp,
         axis_types=(AxisType.Explicit, AxisType.Explicit),
     )
     jax.set_mesh(mesh)
@@ -200,7 +200,7 @@ def train(config: Config, notes: str | None = None) -> None:
     )
     key = jax.random.PRNGKey(config.training.seed)
     ds = imagenet(**asdict(config.dataloader))
-    sharding = NamedSharding(mesh, P(fsdp))
+    sharding = NamedSharding(mesh, P(hsdp))
     ds = iter_dataset_device_put(ds, (sharding, sharding))
     for step, batch in enumerate(ds):
         if step % config.training.save_interval == 0:
