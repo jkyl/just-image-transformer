@@ -125,7 +125,7 @@ class MultiHeadAttention(nnx.Module):
         self.num_heads = num_heads
         self.attn_fn = attn_fn
         self.W_qkv = nnx.Param(
-            glorot_normal(in_axis=0, out_axis=(1, 2, 3))(
+            glorot_normal(in_axis=0, out_axis=(2, 3))(
                 key=rngs(),
                 shape=(dim, 3, self.num_heads, self.head_dim),
                 out_sharding=P("fsdp"),
@@ -173,7 +173,7 @@ class MultiHeadAttention(nnx.Module):
 class FeedForward(nnx.Module):
     def __init__(self, dim: int, hidden_dim: int, *, rngs: nnx.Rngs):
         self.W_up = nnx.Param(
-            glorot_normal(in_axis=0, out_axis=(1, 2))(
+            glorot_normal(in_axis=0, out_axis=2)(
                 rngs(), (dim, 2, hidden_dim), out_sharding=P("fsdp")
             )
         )
