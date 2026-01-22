@@ -8,7 +8,7 @@ format:
 check:
 	uvx ruff check --fix
 
-lint: format check
+lint: check format
 
 typecheck:
 	uvx ty check
